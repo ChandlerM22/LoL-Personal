@@ -5230,10 +5230,32 @@ static void CacheGameState()
                         VX_LOG("[SummCast] %s %c='%s' cd=%.0f readyAt=%.1f\n",
                             g_heroes[i].name, matchedSlot == 4 ? 'D' : 'F', castSpellName, cd, tracked.readyAt);
                     }
-                    // QWER cast (slot 0-3): get data from CSV lookup
+                    // QWER cast (slot 0-3): read baseCooldown from SpellData
                     else {
                         const float defaultCDs[] = { 8.f, 12.f, 14.f, 100.f };
                         cooldownTime = defaultCDs[matchedSlot];
+
+                        // Try to read actual baseCooldown from cast → SpellData → CooldownTime
+                        uintptr_t castSpellData = TargetProcess.Read<uintptr_t>(castPtr + Offsets::SpellCast::SpellData);
+                        if (castSpellData > 0x10000 && castSpellData < 0x7FFFFFFFFFFF) {
+                            // CooldownTime is a float array indexed by spell level (0-based)
+                            // Read spell level from the slot
+                            uintptr_t sb = ptrs[i] + Offsets::GameObject::SpellBook;
+                            uintptr_t slotP = TargetProcess.Read<uintptr_t>(sb + Offsets::SpellBook::SpellSlots + matchedSlot * 0x8);
+                            int spellLevel = 1;
+                            if (slotP > 0x10000 && slotP < 0x7FFFFFFFFFFF)
+                                spellLevel = TargetProcess.Read<int>(slotP + 0x28);
+                            if (spellLevel < 1) spellLevel = 1;
+                            if (spellLevel > 5) spellLevel = 5;
+
+                            float baseCooldown = TargetProcess.Read<float>(
+                                castSpellData + Offsets::SpellData::CooldownTime + (spellLevel - 1) * sizeof(float));
+                            if (baseCooldown > 1.f && baseCooldown < 600.f) {
+                                cooldownTime = baseCooldown;
+                                VX_LOG("[CastCD-SpellData] %s %c lv%d baseCooldown=%.1f (from memory)\n",
+                                    g_heroes[i].name, "QWER"[matchedSlot], spellLevel, baseCooldown);
+                            }
+                        }
                     }
                 }
 
