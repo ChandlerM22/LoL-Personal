@@ -5307,6 +5307,69 @@ static void CacheGameState()
                     }
                 }
 
+                // --- Step 3c: NAME fallback — read spell name from SpellCast and match to summoner slots ---
+                if (matchedSlot < 0) {
+                    char sdName[64] = {};
+                    // Try SpellCastData (SpellInfo ptr at 0x238)
+                    uintptr_t castInfo = TargetProcess.Read<uintptr_t>(castPtr + Offsets::SpellCast::SpellCastData);
+                    if (castInfo > 0x10000 && castInfo < 0x7FFFFFFFFFFF) {
+                        ReadSpellNameSSO(castInfo, Offsets::SpellSlot::SpellInfoNamePtr, sdName, 64);
+                    }
+                    // Also try SpellData ptr at 0x240 if first didn't work
+                    if (!sdName[0]) {
+                        uintptr_t castSD = TargetProcess.Read<uintptr_t>(castPtr + Offsets::SpellCast::SpellData);
+                        if (castSD > 0x10000 && castSD < 0x7FFFFFFFFFFF) {
+                            ReadSpellNameSSO(castSD, Offsets::SpellSlot::SpellInfoNamePtr, sdName, 64);
+                        }
+                    }
+                    if (sdName[0]) {
+                        VX_LOG("[CastNameProbe] %s cast name='%s' (slot still unknown)\n", g_heroes[i].name, sdName);
+                        strncpy(castSpellName, sdName, 63);
+                        // Match against cached summoner slot names
+                        if (g_heroSlotNames[i].cached) {
+                            for (int s = 4; s <= 5; s++) {
+                                if (g_heroSlotNames[i].names[s][0] && strcmp(g_heroSlotNames[i].names[s], sdName) == 0) {
+                                    matchedSlot = s;
+                                    VX_LOG("[CastNameMatch] %s slot %d = '%s'\n", g_heroes[i].name, s, sdName);
+                                    break;
+                                }
+                            }
+                        }
+                        // If name contains "Summoner" but no exact match, use name-based lookup
+                        if (matchedSlot < 0 && strstr(sdName, "Summoner")) {
+                            float cd = LookupSummonerCD(sdName);
+                            if (cd > 0.f) {
+                                // Find which slot (D or F) has this summoner by partial name match
+                                int guessSlot = -1;
+                                if (g_heroSlotNames[i].cached) {
+                                    for (int s = 4; s <= 5; s++) {
+                                        if (strstr(g_heroSlotNames[i].names[s], sdName) || strstr(sdName, g_heroSlotNames[i].names[s])) {
+                                            guessSlot = s; break;
+                                        }
+                                    }
+                                }
+                                // Last resort: match by known summoner keywords
+                                if (guessSlot < 0 && g_heroSlotNames[i].cached) {
+                                    const char* keywords[] = {"Flash", "Dot", "Heal", "Exhaust", "Teleport",
+                                                              "Barrier", "Cleanse", "Ghost", "Haste", "Smite", "Snowball"};
+                                    for (auto kw : keywords) {
+                                        if (!strstr(sdName, kw)) continue;
+                                        for (int s = 4; s <= 5; s++) {
+                                            if (strstr(g_heroSlotNames[i].names[s], kw)) { guessSlot = s; break; }
+                                        }
+                                        if (guessSlot >= 0) break;
+                                    }
+                                }
+                                if (guessSlot >= 0) {
+                                    matchedSlot = guessSlot;
+                                    VX_LOG("[CastNameSumm] %s slot %d = '%s' (keyword match)\n",
+                                        g_heroes[i].name, guessSlot, sdName);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // --- Step 4: Handle matched cast ---
                 if (matchedSlot >= 0) {
                     // Summoner spell cast (slot 4 or 5)
@@ -6882,6 +6945,13 @@ static void OrbwalkerTick()
                 if (act.castType == ChampionCombo::CastType::Position) {
                     // predict where enemy will be when spell lands
                     float predTime = act.delaySeconds + 0.05f; // spell delay + network/input lag
+                    // add projectile travel time if spell has a projectile speed
+                    if (act.projectileSpeed > 100.f && q.distance > 0.f) {
+                        float travelTime = q.distance / act.projectileSpeed;
+                        predTime += travelTime;
+                    }
+                    // clamp prediction to reasonable range
+                    if (predTime > 1.5f) predTime = 1.5f;
                     auto [predSp, predOk] = predictedScreenPos(predTime);
                     aimAction(predOk ? predSp : (targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos), true, true);
                     Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
@@ -6901,8 +6971,16 @@ static void OrbwalkerTick()
                 if (g_orbReadCooldowns && g_spells[s].level > 0 && !g_spells[s].ready) continue;
                 if ((now - g_orbLastSpell[s]) < (ULONGLONG)(g_orbSpellGateMs + (g_orbHumanize ? randInt(0, 10) : 0))) continue;
                 {
-                    // generic fallback: predict with ~0.3s default delay
-                    auto [predSp, predOk] = predictedScreenPos(0.3f);
+                    // generic fallback: predict with cast delay + estimated travel time
+                    float genPred = 0.3f;
+                    float tdx = g_localPos.x - targetWorldPos.x, tdz = g_localPos.z - targetWorldPos.z;
+                    float tDist = sqrtf(tdx*tdx + tdz*tdz);
+                    if (g_spells[s].range > 100.f && tDist > 0.f) {
+                        float estSpeed = 1200.f; // reasonable default missile speed
+                        genPred = 0.15f + tDist / estSpeed; // cast delay + travel
+                        if (genPred > 1.2f) genPred = 1.2f;
+                    }
+                    auto [predSp, predOk] = predictedScreenPos(genPred);
                     aimAction(predOk ? predSp : (targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos), true, true);
                 }
                 Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
