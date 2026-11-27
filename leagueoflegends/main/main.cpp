@@ -347,6 +347,7 @@ struct CachedHero {
     uintptr_t addr;
     Vec3      pos;
     Vec3      lastPos;
+    Vec3      velocity;      // units/sec estimated from pos deltas
     float     health, maxHealth;
     float     shield, magicShield;
     float     attackRange;
@@ -4916,7 +4917,8 @@ static void CacheGameState()
             auto& old = oldHeroes[j];
             if (old.addr == ptrs[i]) {
                 g_heroes[i].wasVisible    = old.visible;
-                g_heroes[i].lastPos       = old.lastPos;
+                g_heroes[i].lastPos       = old.pos;  // previous frame's position
+                g_heroes[i].velocity      = old.velocity;
                 g_heroes[i].lastSeenTime  = old.lastSeenTime;
                 g_heroes[i].recallAlerted = old.recallAlerted;
                 found = true;
@@ -4927,9 +4929,28 @@ static void CacheGameState()
             g_heroes[i].wasVisible    = false;
             g_heroes[i].recallAlerted = false;
             g_heroes[i].lastPos       = g_heroes[i].pos;
+            g_heroes[i].velocity      = {0,0,0};
             g_heroes[i].lastSeenTime  = 0.f;
         }
         if (g_heroes[i].visible) {
+            // compute velocity from position delta
+            float dx = g_heroes[i].pos.x - g_heroes[i].lastPos.x;
+            float dz = g_heroes[i].pos.z - g_heroes[i].lastPos.z;
+            float dist = sqrtf(dx*dx + dz*dz);
+            if (dist > 1.f && dist < 2000.f && g_heroes[i].lastSeenTime > 0.f) {
+                float dt = g_gameTime - g_heroes[i].lastSeenTime;
+                if (dt > 0.001f && dt < 1.f) {
+                    float speed = dist / dt;
+                    // smooth: 70% new, 30% old to reduce jitter
+                    g_heroes[i].velocity.x = 0.7f * (dx / dt) + 0.3f * g_heroes[i].velocity.x;
+                    g_heroes[i].velocity.z = 0.7f * (dz / dt) + 0.3f * g_heroes[i].velocity.z;
+                    g_heroes[i].velocity.y = 0.f;
+                }
+            } else if (dist <= 1.f) {
+                // standing still — decay velocity
+                g_heroes[i].velocity.x *= 0.5f;
+                g_heroes[i].velocity.z *= 0.5f;
+            }
             g_heroes[i].lastPos       = g_heroes[i].pos;
             g_heroes[i].lastSeenTime  = g_gameTime;
             g_heroes[i].recallAlerted = false;
@@ -6079,6 +6100,44 @@ static void DrawESP()
                     float ty = startY + (boxH - tsz.y) * 0.5f;
                     dl->AddText(ImVec2(tx, ty), txtCol, txt);
                 }
+
+                // ── Summoner Spell D/F indicators below QWER ──
+                if (g_trackerSumms) {
+                    float summY = startY + boxH + 2.f * sc;
+                    float summBoxW = 2 * boxW + gap;
+                    float summBoxH = boxH;
+                    float summStartX = screenPos.x - (2 * summBoxW + gap) / 2.f;
+                    const SummonerSpell* summs[2] = { &g_heroSumms[heroIdx].d, &g_heroSumms[heroIdx].f };
+                    const char* summLabels[2] = { "D", "F" };
+                    for (int s = 0; s < 2; s++) {
+                        float sx = summStartX + s * (summBoxW + gap);
+                        const auto& sp = *summs[s];
+                        ImU32 sBg, sTx;
+                        char sTxt[16];
+                        if (!sp.name[0]) {
+                            sBg  = IM_COL32(50, 50, 55, 200);
+                            sTx  = IM_COL32(120, 120, 130, 255);
+                            snprintf(sTxt, sizeof(sTxt), "%s", summLabels[s]);
+                        } else if (sp.ready) {
+                            sBg  = IM_COL32(20, 70, 90, 220);
+                            sTx  = IM_COL32(80, 200, 255, 255);
+                            // show short summoner name
+                            const char* sn = sp.name;
+                            if (strncmp(sn, "Summoner", 8) == 0) sn += 8;
+                            snprintf(sTxt, sizeof(sTxt), "%s", sn);
+                        } else {
+                            float rem = sp.readyAt - g_gameTime; if (rem < 0) rem = 0;
+                            float cdPct = std::clamp(rem / std::max(sp.totalCD, 1.f), 0.f, 1.f);
+                            sBg  = IM_COL32((uint8_t)(140 * cdPct), 30, (uint8_t)(80 * (1.f - cdPct)), 220);
+                            sTx  = IM_COL32(255, 255, 255, 255);
+                            if (rem >= 10.f) snprintf(sTxt, sizeof(sTxt), "%.0fs", rem);
+                            else             snprintf(sTxt, sizeof(sTxt), "%.1fs", rem);
+                        }
+                        dl->AddRectFilled(ImVec2(sx, summY), ImVec2(sx + summBoxW, summY + summBoxH), sBg, 2.f);
+                        auto stsz = ImGui::CalcTextSize(sTxt);
+                        dl->AddText(ImVec2(sx + (summBoxW - stsz.x) * 0.5f, summY + (summBoxH - stsz.y) * 0.5f), sTx, sTxt);
+                    }
+                }
             }
         }
 
@@ -6689,17 +6748,38 @@ static void OrbwalkerTick()
     if (g_orbTargetIdx >= 0 && g_orbTargetIsMinion && g_orbTargetIdx < (int)g_minions.size())
         targetIsDummy = g_minions[g_orbTargetIdx].maxHealth >= 2000.f;
 
-    // Also compute the TRUE screen pos (no click offset) for spell aiming
+    // Compute predicted aim position (current pos + velocity * prediction time)
+    // prediction lambda: given delay in seconds, returns screen pos with movement prediction
+    Vec3 targetVelocity{};
+    if (!g_orbTargetIsMinion && g_orbTargetIdx >= 0 && g_orbTargetIdx < (int)g_heroes.size())
+        targetVelocity = g_heroes[g_orbTargetIdx].velocity;
+
+    auto predictedScreenPos = [&](float delaySec) -> std::pair<Vec2, bool> {
+        Vec3 basePos{};
+        if (g_orbTargetIsMinion && g_orbTargetIdx >= 0 && g_orbTargetIdx < (int)g_minions.size())
+            basePos = g_minions[g_orbTargetIdx].pos;
+        else if (!g_orbTargetIsMinion && g_orbTargetIdx >= 0 && g_orbTargetIdx < (int)g_heroes.size())
+            basePos = g_heroes[g_orbTargetIdx].pos;
+        if (!(basePos.x || basePos.y || basePos.z))
+            return {targetScreenPos, targetOnScreen};
+        // apply movement prediction
+        Vec3 predicted = basePos;
+        if (delaySec > 0.f) {
+            predicted.x += targetVelocity.x * delaySec;
+            predicted.z += targetVelocity.z * delaySec;
+        }
+        Vec2 sp{};
+        bool ok = WorldToScreen(predicted, sp);
+        return {sp, ok};
+    };
+
+    // default aim pos (no prediction) for attack targeting
     Vec2 targetTrueScreenPos{};
     bool targetTrueOnScreen = false;
-    if (g_orbTargetIdx >= 0) {
-        Vec3 truePos{};
-        if (g_orbTargetIsMinion && g_orbTargetIdx < (int)g_minions.size()) truePos = g_minions[g_orbTargetIdx].pos;
-        else if (!g_orbTargetIsMinion && g_orbTargetIdx < (int)g_heroes.size()) truePos = g_heroes[g_orbTargetIdx].pos;
-        if (truePos.x || truePos.y || truePos.z)
-            targetTrueOnScreen = WorldToScreen(truePos, targetTrueScreenPos);
-        else
-            { targetTrueScreenPos = targetScreenPos; targetTrueOnScreen = targetOnScreen; }
+    {
+        auto [sp, ok] = predictedScreenPos(0.f);
+        targetTrueScreenPos = sp;
+        targetTrueOnScreen = ok;
     }
 
     Vec2 cursorRestore{}; bool cursorMoved = false;
@@ -6750,7 +6830,10 @@ static void OrbwalkerTick()
             ChampionCombo::Action act = ChampionCombo::Choose(q, g_comboSettings);
             if (act.valid && act.slot >= 0 && act.slot < 4 && act.castHoldMs == 0 && !act.useAuxTarget) {
                 if (act.castType == ChampionCombo::CastType::Position) {
-                    aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
+                    // predict where enemy will be when spell lands
+                    float predTime = act.delaySeconds + 0.05f; // spell delay + network/input lag
+                    auto [predSp, predOk] = predictedScreenPos(predTime);
+                    aimAction(predOk ? predSp : (targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos), true, true);
                     Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
                 }
                 PressKey((uint8_t)act.key);
@@ -6767,7 +6850,11 @@ static void OrbwalkerTick()
                 if (!*useSpell[s]) continue;
                 if (g_orbReadCooldowns && g_spells[s].level > 0 && !g_spells[s].ready) continue;
                 if ((now - g_orbLastSpell[s]) < (ULONGLONG)(g_orbSpellGateMs + (g_orbHumanize ? randInt(0, 10) : 0))) continue;
-                aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
+                {
+                    // generic fallback: predict with ~0.3s default delay
+                    auto [predSp, predOk] = predictedScreenPos(0.3f);
+                    aimAction(predOk ? predSp : (targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos), true, true);
+                }
                 Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
                 PressKey(g_keyOptions[g_orbSpellKeyIdx[s]].hid);
                 Sleep(20); // hold cursor on target until game processes the cast
