@@ -6080,6 +6080,36 @@ static void DrawESP()
         }
     }
 
+    // ── Practice Tool Dummies (draw like enemy champions) ──
+    for (const auto& m : g_minions) {
+        if (!m.addr || m.health <= 0.f || !m.visible) continue;
+        if (m.team == g_localTeam) continue;
+        if (m.maxHealth < 2000.f) continue; // dummies have high HP
+        Vec2 sp;
+        if (!WorldToScreen(m.pos, sp)) continue;
+        if (sp.x < 0 || sp.x > g_screenW || sp.y < 0 || sp.y > g_screenH) continue;
+        float sc = ScreenScale(m.pos);
+        ImU32 dummyCol = IM_COL32(255, 100, 100, 255);
+        if (g_espBox) {
+            float h = 80.f * sc, w = 40.f * sc;
+            dl->AddRect(ImVec2(sp.x - w/2, sp.y - h), ImVec2(sp.x + w/2, sp.y), dummyCol, 0.f, 0, std::max(1.f, 2.f * sc));
+        }
+        if (g_espHealth && m.maxHealth > 0.f) {
+            float ratio = std::clamp(m.health / m.maxHealth, 0.f, 1.f);
+            float barW = 50.f * sc, barH = std::max(3.f, 5.f * sc);
+            float bx = sp.x - barW / 2;
+            float by = sp.y + 5.f * sc;
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW, by + barH), IM_COL32(40, 40, 40, 255));
+            ImU32 hpCol = ratio > 0.5f ? IM_COL32(0, 255, 0, 255) : (ratio > 0.25f ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 0, 0, 255));
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + barW * ratio, by + barH), hpCol);
+        }
+        if (g_espNames) {
+            const char* tag = "Dummy";
+            auto tsz = ImGui::CalcTextSize(tag);
+            dl->AddText(ImVec2(sp.x - tsz.x/2, sp.y - 15.f * sc), dummyCol, tag);
+        }
+    }
+
     if (g_espTurretRange) {
         for (const auto& turret : g_turrets) {
             if (!turret.addr || turret.health <= 0.f) continue;
