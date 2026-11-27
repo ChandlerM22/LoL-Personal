@@ -1126,6 +1126,9 @@ struct TrackedSummCD {
 };
 static TrackedSummCD g_trackedSummD[12] = {};
 static TrackedSummCD g_trackedSummF[12] = {};
+// Previous readyAt values for change-detection (encrypted values still change on cast)
+static float g_prevSummReadyAt[12][2] = {};
+static bool  g_prevSummReadyAtValid[12][2] = {};
 
 // ── Auto Smite ──
 static bool  g_smiteEnabled       = false;
@@ -4945,6 +4948,26 @@ static void CacheGameState()
                     g_heroes[i].velocity.x = 0.7f * (dx / dt) + 0.3f * g_heroes[i].velocity.x;
                     g_heroes[i].velocity.z = 0.7f * (dz / dt) + 0.3f * g_heroes[i].velocity.z;
                     g_heroes[i].velocity.y = 0.f;
+                    // Flash detection: enemy teleports 300+ units in <0.15s = instant blink
+                    if (dist > 300.f && dt < 0.15f && g_heroes[i].team != g_localTeam) {
+                        // find which summ slot is Flash and mark it
+                        for (int s = 0; s < 2; s++) {
+                            int slotIdx = (s == 0) ? 4 : 5;
+                            const char* sname = g_heroSlotNames[i].cached ? g_heroSlotNames[i].names[slotIdx] : "";
+                            if (strstr(sname, "Flash")) {
+                                auto& tracked = (s == 0) ? g_trackedSummD[i] : g_trackedSummF[i];
+                                if (!tracked.tracked || tracked.readyAt <= g_gameTime) {
+                                    tracked.castTime = g_gameTime;
+                                    tracked.totalCD  = 300.f;
+                                    tracked.readyAt  = g_gameTime + 300.f;
+                                    tracked.tracked  = true;
+                                    VX_LOG("[FlashBlink] %s teleported %.0f units in %.3fs — Flash CD tracked\n",
+                                        g_heroes[i].name, dist, dt);
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             } else if (dist <= 1.f) {
                 // standing still — decay velocity
@@ -5021,6 +5044,33 @@ static void CacheGameState()
                 }
                 out.name[63] = 0;
             }
+        }
+    }
+
+    // ── Detect summoner cast via readyAt VALUE CHANGE (works even if encrypted) ──
+    for (int i = 0; i < (int)ptrs.size() && i < 12; i++) {
+        if (!ptrs[i] || g_heroes[i].team == g_localTeam) continue;
+        for (int s = 0; s < 2; s++) {
+            SummonerSpell& out = (s == 0) ? g_heroSumms[i].d : g_heroSumms[i].f;
+            auto& tracked = (s == 0) ? g_trackedSummD[i] : g_trackedSummF[i];
+            float curVal = out.readyAt;
+            if (g_prevSummReadyAtValid[i][s]) {
+                float prevVal = g_prevSummReadyAt[i][s];
+                bool trackExpired = tracked.tracked && tracked.readyAt <= g_gameTime;
+                if (curVal != prevVal && (!tracked.tracked || trackExpired)) {
+                    float cd = LookupSummonerCD(out.name);
+                    if (cd > 0.f) {
+                        tracked.castTime = g_gameTime;
+                        tracked.totalCD  = cd;
+                        tracked.readyAt  = g_gameTime + cd;
+                        tracked.tracked  = true;
+                        VX_LOG("[SummChanged] %s %c='%s' readyAt changed %.1f→%.1f — tracking cd=%.0f\n",
+                            g_heroes[i].name, s == 0 ? 'D' : 'F', out.name, prevVal, curVal, cd);
+                    }
+                }
+            }
+            g_prevSummReadyAt[i][s] = curVal;
+            g_prevSummReadyAtValid[i][s] = true;
         }
     }
 
