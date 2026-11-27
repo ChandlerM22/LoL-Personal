@@ -1293,6 +1293,7 @@ static int g_orbSpellKeyIdx[4] = {0, 1, 2, 3}; // default Q, W, E, R
 // Mode activation keys (configurable)
 // defaults: Space=Combo, C=Harass, V=LaneClear, X=LastHit, Z=Flee
 static int g_orbModeKeyIdx[5] = {48, 21, 22, 20, 19}; // indices into g_keyOptions: Space, C, V, X, Z
+static bool g_orbModeEnabled[5] = {true, true, true, true, true}; // per-mode on/off: Combo, Harass, Clear, LastHit, Flee
 
 static uint32_t HidToVk(uint8_t hid) {
     if (hid >= 0x04 && hid <= 0x1D) return 'A' + (hid - 0x04);
@@ -1675,6 +1676,11 @@ static void SaveConfig(const char* name) {
     fprintf(f, xorstr_("orb_mode_clear_hid=%d\n"), g_keyOptions[g_orbModeKeyIdx[2]].hid);
     fprintf(f, xorstr_("orb_mode_lasthit_hid=%d\n"), g_keyOptions[g_orbModeKeyIdx[3]].hid);
     fprintf(f, xorstr_("orb_mode_flee_hid=%d\n"), g_keyOptions[g_orbModeKeyIdx[4]].hid);
+    fprintf(f, xorstr_("orb_mode_combo_on=%d\n"), g_orbModeEnabled[0]);
+    fprintf(f, xorstr_("orb_mode_harass_on=%d\n"), g_orbModeEnabled[1]);
+    fprintf(f, xorstr_("orb_mode_clear_on=%d\n"), g_orbModeEnabled[2]);
+    fprintf(f, xorstr_("orb_mode_lasthit_on=%d\n"), g_orbModeEnabled[3]);
+    fprintf(f, xorstr_("orb_mode_flee_on=%d\n"), g_orbModeEnabled[4]);
     fprintf(f, xorstr_("orb_read_cooldowns=%d\n"), g_orbReadCooldowns);
     fprintf(f, xorstr_("orb_use_q=%d\n"), g_orbUseQ);
     fprintf(f, xorstr_("orb_use_w=%d\n"), g_orbUseW);
@@ -1782,6 +1788,11 @@ static void LoadConfig(const char* name) {
         else if (!strcmp(line, xorstr_("orb_mode_clear_hid")))   g_orbModeKeyIdx[2] = FindKeyIdx((uint8_t)atoi(val));
         else if (!strcmp(line, xorstr_("orb_mode_lasthit_hid"))) g_orbModeKeyIdx[3] = FindKeyIdx((uint8_t)atoi(val));
         else if (!strcmp(line, xorstr_("orb_mode_flee_hid")))    g_orbModeKeyIdx[4] = FindKeyIdx((uint8_t)atoi(val));
+        else if (!strcmp(line, xorstr_("orb_mode_combo_on")))   g_orbModeEnabled[0] = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("orb_mode_harass_on")))  g_orbModeEnabled[1] = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("orb_mode_clear_on")))   g_orbModeEnabled[2] = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("orb_mode_lasthit_on"))) g_orbModeEnabled[3] = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("orb_mode_flee_on")))    g_orbModeEnabled[4] = atoi(val) != 0;
         else if (!strcmp(line, xorstr_("orb_atk_move_key"))) {} // legacy, ignored
         else if (!strcmp(line, xorstr_("orb_read_cooldowns"))) g_orbReadCooldowns = atoi(val) != 0;
         else if (!strcmp(line, xorstr_("orb_use_q")))        g_orbUseQ = atoi(val) != 0;
@@ -6388,11 +6399,11 @@ static void OrbwalkerTick()
     if (g_gameTime < 1.0f) return;
 
     int mode = 0;
-    if      (Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[0]].hid))) mode = 1;
-    else if (Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[1]].hid))) mode = 2;
-    else if (Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[2]].hid))) mode = 3;
-    else if (Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[3]].hid))) mode = 4;
-    else if (Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[4]].hid))) mode = 5;
+    if      (g_orbModeEnabled[0] && Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[0]].hid))) mode = 1;
+    else if (g_orbModeEnabled[1] && Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[1]].hid))) mode = 2;
+    else if (g_orbModeEnabled[2] && Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[2]].hid))) mode = 3;
+    else if (g_orbModeEnabled[3] && Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[3]].hid))) mode = 4;
+    else if (g_orbModeEnabled[4] && Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_orbModeKeyIdx[4]].hid))) mode = 5;
     g_orbMode = mode;
     if (mode == 0) { g_orbTargetIdx = -1; g_orbTargetIsMinion = false; g_orbStickyAddr = 0; g_orbStickyUntil = 0; g_orbLastActionTarget = 0; return; }
 
@@ -7069,14 +7080,24 @@ static void DrawMenu()
             }
 
             ImGui::Spacing();
-            SectionHeader("Mode Keys");
+            SectionHeader("Combat Modes");
             {
                 static const char* modeLabels[] = {"Combo","Harass","Lane Clear","Last Hit","Flee"};
+                static const ImU32 modeColors[] = {
+                    IM_COL32(255,80,80,255), IM_COL32(255,180,50,255),
+                    IM_COL32(50,200,255,255), IM_COL32(255,230,50,255), IM_COL32(80,255,130,255)
+                };
                 for (int m = 0; m < 5; m++) {
-                    ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1), "%s", modeLabels[m]);
-                    ImGui::SameLine(); ImGui::SetNextItemWidth(sliderW);
-                    char id[32]; snprintf(id, sizeof(id), "##mode_key_%d", m);
-                    ImGui::Combo(id, &g_orbModeKeyIdx[m], keyComboStr);
+                    char togId[32]; snprintf(togId, sizeof(togId), "##mode_en_%d", m);
+                    // toggle + colored label
+                    Toggle(togId, &g_orbModeEnabled[m]);
+                    ImGui::SameLine(0, 6);
+                    ImU32 labelCol = g_orbModeEnabled[m] ? modeColors[m] : IM_COL32(90, 90, 100, 255);
+                    ImGui::TextColored(ImColor(labelCol).Value, "%s", modeLabels[m]);
+                    ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f + 60.f);
+                    ImGui::SetNextItemWidth(sliderW * 0.75f);
+                    char keyId[32]; snprintf(keyId, sizeof(keyId), "##mode_key_%d", m);
+                    ImGui::Combo(keyId, &g_orbModeKeyIdx[m], keyComboStr);
                 }
             }
 
