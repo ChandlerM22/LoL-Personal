@@ -1218,8 +1218,13 @@ static float g_espBoxColor[4]  = { 1.f, 0.3f, 0.3f, 1.f };
 static float g_allyColor[4]    = { 0.1f, 0.5f, 1.f, 1.f };
 static float g_enemyColor[4]   = { 1.f, 0.2f, 0.2f, 1.f };
 
-static bool g_sidebarEnabled   = true;
-static int  g_sidebarSide      = 1;  // 0=left, 1=right
+// ── Enemy Jungler Tracker ──
+static bool  g_junglerTracker     = true;
+static bool  g_junglerDangerAlert = true;
+static float g_junglerDangerRange = 3000.f;  // world units — flash alert when jungler spotted within this range
+static int   g_enemyJunglerIdx    = -1;      // index into g_heroes, -1 = not found yet
+static float g_junglerAlertTime   = 0.f;     // game time of last danger alert trigger
+static float g_junglerAlertDuration = 3.f;   // how long alert stays on screen
 
 static char g_makcuPort[32]    = "";
 static int  g_makcuBaud        = 115200;
@@ -1627,8 +1632,9 @@ static void SaveConfig(const char* name) {
     fprintf(f, xorstr_("enemy_color=%.3f,%.3f,%.3f,%.3f\n"), g_enemyColor[0], g_enemyColor[1], g_enemyColor[2], g_enemyColor[3]);
     fprintf(f, xorstr_("ally_color=%.3f,%.3f,%.3f,%.3f\n"), g_allyColor[0], g_allyColor[1], g_allyColor[2], g_allyColor[3]);
     fprintf(f, xorstr_("bg_color=%.3f,%.3f,%.3f\n"), g_bgColor[0], g_bgColor[1], g_bgColor[2]);
-        fprintf(f, xorstr_("sidebar=%d\n"), g_sidebarEnabled);
-    fprintf(f, xorstr_("sidebar_side=%d\n"), g_sidebarSide);
+    fprintf(f, xorstr_("jungler_tracker=%d\n"), g_junglerTracker);
+    fprintf(f, xorstr_("jungler_danger=%d\n"), g_junglerDangerAlert);
+    fprintf(f, xorstr_("jungler_danger_range=%.0f\n"), g_junglerDangerRange);
     fprintf(f, xorstr_("minimap=%d\n"), g_minimapEnabled);
     fprintf(f, xorstr_("minimap_size=%.0f\n"), g_minimapSize);
     fprintf(f, xorstr_("minimap_opacity=%.2f\n"), g_minimapOpacity);
@@ -1727,8 +1733,11 @@ static void LoadConfig(const char* name) {
         else if (!strcmp(line, xorstr_("enemy_color")))      sscanf(val, "%f,%f,%f,%f", &g_enemyColor[0], &g_enemyColor[1], &g_enemyColor[2], &g_enemyColor[3]);
         else if (!strcmp(line, xorstr_("ally_color")))       sscanf(val, "%f,%f,%f,%f", &g_allyColor[0], &g_allyColor[1], &g_allyColor[2], &g_allyColor[3]);
         else if (!strcmp(line, xorstr_("bg_color")))         sscanf(val, "%f,%f,%f", &g_bgColor[0], &g_bgColor[1], &g_bgColor[2]);
-                else if (!strcmp(line, xorstr_("sidebar")))          g_sidebarEnabled = atoi(val) != 0;
-        else if (!strcmp(line, xorstr_("sidebar_side")))     g_sidebarSide = atoi(val);
+        else if (!strcmp(line, xorstr_("sidebar")))          {} // removed
+        else if (!strcmp(line, xorstr_("sidebar_side")))     {} // removed
+        else if (!strcmp(line, xorstr_("jungler_tracker")))  g_junglerTracker = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("jungler_danger")))   g_junglerDangerAlert = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("jungler_danger_range"))) g_junglerDangerRange = std::clamp((float)atof(val), 1000.f, 8000.f);
         else if (!strcmp(line, xorstr_("minimap")))          g_minimapEnabled = atoi(val) != 0;
         else if (!strcmp(line, xorstr_("minimap_size")))     g_minimapSize = std::clamp((float)atof(val), 60.f, 600.f);
         else if (!strcmp(line, xorstr_("minimap_opacity")))  g_minimapOpacity = std::clamp((float)atof(val), 0.3f, 1.f);
@@ -5391,6 +5400,36 @@ static void CacheGameState()
         }
     }
 
+    // ── Enemy jungler detection (find which enemy has Smite) ──
+    if (g_junglerTracker || g_junglerDangerAlert) {
+        if (g_enemyJunglerIdx < 0) {
+            for (int i = 0; i < (int)g_heroes.size() && i < 12; i++) {
+                if (!g_heroes[i].addr || g_heroes[i].team == g_localTeam) continue;
+                auto& d = g_heroSumms[i].d;
+                auto& f = g_heroSumms[i].f;
+                if ((d.name[0] && (strstr(d.name, "Smite") || strstr(d.name, "smite") || strstr(d.name, "SummonerSmite"))) ||
+                    (f.name[0] && (strstr(f.name, "Smite") || strstr(f.name, "smite") || strstr(f.name, "SummonerSmite")))) {
+                    g_enemyJunglerIdx = i;
+                    VX_LOG("[JGTracker] Enemy jungler detected: %s (idx=%d)\n", g_heroes[i].name, i);
+                    break;
+                }
+            }
+        }
+        // danger alert: trigger when jungler becomes visible near local player
+        if (g_junglerDangerAlert && g_enemyJunglerIdx >= 0 && g_enemyJunglerIdx < (int)g_heroes.size()) {
+            auto& jg = g_heroes[g_enemyJunglerIdx];
+            if (jg.visible && !jg.isDead) {
+                float dx = jg.pos.x - g_localPos.x;
+                float dz = jg.pos.z - g_localPos.z;
+                float dist = sqrtf(dx * dx + dz * dz);
+                if (dist < g_junglerDangerRange && (g_gameTime - g_junglerAlertTime) > g_junglerAlertDuration + 2.f) {
+                    g_junglerAlertTime = g_gameTime;
+                    VX_LOG("[JGTracker] DANGER! %s spotted %.0f units away!\n", jg.name, dist);
+                }
+            }
+        }
+    }
+
     g_recallAlerts.erase(
         std::remove_if(g_recallAlerts.begin(), g_recallAlerts.end(),
             [](const RecallAlert& a) { return g_gameTime - a.triggerTime > 5.f; }),
@@ -5857,12 +5896,14 @@ static void DrawESP()
     ImU32 enemyCol = ImGui::ColorConvertFloat4ToU32(ImVec4(g_enemyColor[0], g_enemyColor[1], g_enemyColor[2], g_enemyColor[3]));
     ImU32 allyCol  = ImGui::ColorConvertFloat4ToU32(ImVec4(g_allyColor[0], g_allyColor[1], g_allyColor[2], g_allyColor[3]));
 
-    for (const auto& hero : g_heroes)
+    for (int heroIdx = 0; heroIdx < (int)g_heroes.size(); heroIdx++)
     {
+        const auto& hero = g_heroes[heroIdx];
         if (!hero.addr || hero.isDead) continue;
         if (hero.addr == g_localAddr) continue;  // never draw ESP on ourselves
         bool isAlly = (hero.team == g_localTeam);
         if (g_espEnemyOnly && isAlly) continue;
+        bool isJungler = (g_junglerTracker && heroIdx == g_enemyJunglerIdx);
 
         if (espDiag) {
             Vec2 dbgSp;
@@ -5873,15 +5914,21 @@ static void DrawESP()
                 dbgW2S, dbgSp.x, dbgSp.y, (int)g_espEnemyOnly, isAlly);
         }
 
-        if (!hero.visible && !isAlly && g_espLastPosition && hero.lastSeenTime > 0.f)
+        if (!hero.visible && !isAlly && (g_espLastPosition || isJungler) && hero.lastSeenTime > 0.f)
         {
             float timeSince = g_gameTime - hero.lastSeenTime;
 
-            // Color by time: yellow <10s, orange 10-30s, red 30s+
+            // jungler gets special purple/magenta, others keep yellow/orange/red
             ImU32 miaCol;
-            if (timeSince < 10.f)       miaCol = IM_COL32(255, 255, 0, 255);
-            else if (timeSince < 30.f)  miaCol = IM_COL32(255, 160, 0, 255);
-            else                        miaCol = IM_COL32(255, 40, 40, 255);
+            if (isJungler) {
+                float pulse = 0.7f + 0.3f * sinf(g_gameTime * 4.f);
+                uint8_t mag = (uint8_t)(255 * pulse);
+                miaCol = IM_COL32(mag, 0, 255, 255);
+            } else {
+                if (timeSince < 10.f)       miaCol = IM_COL32(255, 255, 0, 255);
+                else if (timeSince < 30.f)  miaCol = IM_COL32(255, 160, 0, 255);
+                else                        miaCol = IM_COL32(255, 40, 40, 255);
+            }
 
             Vec2 lastSp;
             bool onScreen = WorldToScreen(hero.lastPos, lastSp) &&
@@ -5890,7 +5937,7 @@ static void DrawESP()
 
             if (onScreen && lastSp.x >= 0 && lastSp.x <= g_screenW && lastSp.y >= 0 && lastSp.y <= g_screenH)
             {
-    
+
                 float pulse = 20.f + 5.f * sinf(g_gameTime * 3.f);
                 dl->AddCircle(ImVec2(lastSp.x, lastSp.y), pulse, miaCol, 0, 2.f);
                 dl->AddCircle(ImVec2(lastSp.x, lastSp.y), 10.f, miaCol, 0, 2.f);
@@ -5899,7 +5946,10 @@ static void DrawESP()
                 dl->AddLine(ImVec2(cx + 7, cy - 7), ImVec2(cx - 7, cy + 7), miaCol, 2.f);
 
                 char lastBuf[80];
-                snprintf(lastBuf, sizeof(lastBuf), "%s [%.0fs]", hero.name, timeSince);
+                if (isJungler)
+                    snprintf(lastBuf, sizeof(lastBuf), "[JG] %s [%.0fs]", hero.name, timeSince);
+                else
+                    snprintf(lastBuf, sizeof(lastBuf), "%s [%.0fs]", hero.name, timeSince);
                 auto ts = ImGui::CalcTextSize(lastBuf);
                 dl->AddRectFilled(ImVec2(cx - ts.x/2 - 2, cy - 28), ImVec2(cx + ts.x/2 + 2, cy - 12), IM_COL32(20,20,20,255), 3.f);
                 dl->AddText(ImVec2(cx - ts.x/2, cy - 27), miaCol, lastBuf);
@@ -5923,7 +5973,10 @@ static void DrawESP()
                 dl->AddTriangleFilled(tip, left, right, miaCol);
 
                 char edgeBuf[80];
-                snprintf(edgeBuf, sizeof(edgeBuf), "%s %.0fs", hero.name, timeSince);
+                if (isJungler)
+                    snprintf(edgeBuf, sizeof(edgeBuf), "[JG] %s %.0fs", hero.name, timeSince);
+                else
+                    snprintf(edgeBuf, sizeof(edgeBuf), "%s %.0fs", hero.name, timeSince);
                 auto es = ImGui::CalcTextSize(edgeBuf);
                 float tx = cx - es.x/2, ty = cy - dy * 18 - es.y/2;
                 tx = std::clamp(tx, 4.f, (float)g_screenW - es.x - 4.f);
@@ -6077,48 +6130,34 @@ static void DrawESP()
         }
     }
 
-    if (g_sidebarEnabled) {
-        float iconSz = 48.f;
-        float barH = 5.f;
-        float gap = 4.f;
-        float cellW = iconSz + gap;
+    // ── Jungler Danger Alert (on-screen warning) ──
+    if (g_junglerDangerAlert && g_junglerAlertTime > 0.f) {
+        float alertElapsed = g_gameTime - g_junglerAlertTime;
+        if (alertElapsed < g_junglerAlertDuration && g_enemyJunglerIdx >= 0 && g_enemyJunglerIdx < (int)g_heroes.size()) {
+            float alpha = 1.f - (alertElapsed / g_junglerAlertDuration);
+            alpha = std::clamp(alpha, 0.f, 1.f);
+            uint8_t a = (uint8_t)(alpha * 255);
+            float pulse = 0.5f + 0.5f * sinf(g_gameTime * 8.f);
+            uint8_t r = (uint8_t)(200 + 55 * pulse);
 
-        int enemyCount = 0;
-        for (const auto& hero : g_heroes)
-            if (hero.addr && hero.team != g_localTeam) enemyCount++;
+            // red border flash
+            float borderW = 6.f * alpha;
+            dl->AddRect(ImVec2(0, 0), ImVec2((float)g_screenW, (float)g_screenH), IM_COL32(r, 0, 0, a / 2), 0.f, 0, borderW);
+            dl->AddRect(ImVec2(borderW, borderW), ImVec2((float)g_screenW - borderW, (float)g_screenH - borderW), IM_COL32(r, 0, 0, a / 4), 0.f, 0, borderW / 2);
 
-        float totalW = enemyCount * cellW - gap;
-        float startX = ((float)g_screenW - totalW) / 2.f;
-        float startY = 8.f;
-        int idx = 0;
-
-        for (const auto& hero : g_heroes) {
-            if (!hero.addr || hero.team == g_localTeam) continue;
-            float x = startX + idx * cellW;
-            float y = startY;
-
-            dl->AddRectFilled(ImVec2(x - 1, y - 1), ImVec2(x + iconSz + 1, y + iconSz + barH + 3), IM_COL32(20, 20, 20, 255), 3.f);
-
-            auto* icon = GetChampIcon(hero.name);
-            if (icon)
-                dl->AddImage((ImTextureID)icon, ImVec2(x, y), ImVec2(x + iconSz, y + iconSz));
-
-            if (hero.isDead) {
-                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + iconSz, y + iconSz), IM_COL32(20, 20, 20, 255));
-                auto ds = ImGui::CalcTextSize("DEAD");
-                dl->AddText(ImVec2(x + iconSz/2 - ds.x/2, y + iconSz/2 - ds.y/2), IM_COL32(255, 50, 50, 255), "DEAD");
-            } else if (!hero.visible) {
-                dl->AddRect(ImVec2(x, y), ImVec2(x + iconSz, y + iconSz), IM_COL32(255, 180, 0, 255), 0.f, 0, 2.f);
-            }
-
-            if (hero.maxHealth > 0.f && !hero.isDead) {
-                float ratio = std::clamp(hero.health / hero.maxHealth, 0.f, 1.f);
-                float by = y + iconSz + 2.f;
-                dl->AddRectFilled(ImVec2(x, by), ImVec2(x + iconSz, by + barH), IM_COL32(40, 40, 40, 255));
-                ImU32 hc = ratio > 0.5f ? IM_COL32(0, 200, 0, 255) : (ratio > 0.25f ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 0, 0, 255));
-                dl->AddRectFilled(ImVec2(x, by), ImVec2(x + iconSz * ratio, by + barH), hc);
-            }
-            idx++;
+            // warning text at top center
+            const auto& jg = g_heroes[g_enemyJunglerIdx];
+            char alertBuf[128];
+            float dist = sqrtf(
+                (jg.pos.x - g_localPos.x) * (jg.pos.x - g_localPos.x) +
+                (jg.pos.z - g_localPos.z) * (jg.pos.z - g_localPos.z));
+            snprintf(alertBuf, sizeof(alertBuf), "!! ENEMY JG SPOTTED: %s (%.0f units) !!", jg.name, dist);
+            auto ts = ImGui::CalcTextSize(alertBuf);
+            float tx = ((float)g_screenW - ts.x) / 2.f;
+            float ty = 60.f;
+            dl->AddRectFilled(ImVec2(tx - 12, ty - 6), ImVec2(tx + ts.x + 12, ty + ts.y + 6), IM_COL32(20, 0, 0, (uint8_t)(200 * alpha)), 6.f);
+            dl->AddRect(ImVec2(tx - 12, ty - 6), ImVec2(tx + ts.x + 12, ty + ts.y + 6), IM_COL32(r, 0, 0, a), 6.f, 0, 2.f);
+            dl->AddText(ImVec2(tx, ty), IM_COL32(255, 50, 50, a), alertBuf);
         }
     }
 
@@ -6252,22 +6291,28 @@ static void DrawMinimap()
         dl->AddRectFilled(ImVec2(tp.x - 3, tp.y - 3), ImVec2(tp.x + 3, tp.y + 3), tc);
     }
 
-    for (const auto& h : g_heroes) {
+    for (int mi = 0; mi < (int)g_heroes.size(); mi++) {
+        const auto& h = g_heroes[mi];
         if (!h.addr) continue;
         bool isAlly = (h.team == g_localTeam);
         bool isLocal = (h.addr == g_localAddr);
+        bool isJgMap = (g_junglerTracker && mi == g_enemyJunglerIdx);
 
         Vec3 drawPos = h.visible ? h.pos : h.lastPos;
         if (h.isDead && !isLocal) continue;
 
         ImVec2 mp = worldToMap(drawPos);
-        float r = isLocal ? 5.f : 4.f;
+        float r = isLocal ? 5.f : (isJgMap ? 5.f : 4.f);
 
         ImU32 col;
         if (isLocal) {
             col = IM_COL32(0, 255, 120, 255);
         } else if (isAlly) {
             col = IM_COL32(60, 160, 255, 255);
+        } else if (isJgMap) {
+            float pulse = 0.7f + 0.3f * sinf(g_gameTime * 4.f);
+            uint8_t mag = (uint8_t)(255 * pulse);
+            col = IM_COL32(mag, 0, 255, 255);
         } else {
 
             if (h.visible) {
@@ -7242,11 +7287,17 @@ static void DrawMenu()
             Toggle("Minion Health Bars", &g_espMinions);
 
             ImGui::Spacing();
-            SectionHeader("Sidebar");
-            Toggle("Enemy Sidebar", &g_sidebarEnabled);
-            if (g_sidebarEnabled) {
+            SectionHeader("Jungler Tracker");
+            Toggle("JG Last Seen", &g_junglerTracker);
+            Toggle("JG Danger Alert", &g_junglerDangerAlert);
+            if (g_junglerDangerAlert) {
                 ImGui::SetNextItemWidth(sliderW);
-                ImGui::Combo("##side", &g_sidebarSide, "Left\0Right\0");
+                ImGui::SliderFloat("##jgrange", &g_junglerDangerRange, 1000.f, 6000.f, "Range: %.0f");
+            }
+            if (g_enemyJunglerIdx >= 0 && g_enemyJunglerIdx < (int)g_heroes.size()) {
+                ImGui::TextColored(ImVec4(0.6f,0.9f,0.4f,1), "JG: %s", g_heroes[g_enemyJunglerIdx].name);
+            } else {
+                ImGui::TextColored(ImVec4(0.5f,0.5f,0.5f,1), "JG: scanning...");
             }
 
             ImGui::Spacing();
@@ -9057,6 +9108,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
                     g_minions.clear();
                     g_turrets.clear();
                     g_gameTime = 0.f;
+                    g_enemyJunglerIdx = -1;
+                    g_junglerAlertTime = 0.f;
                 }
                 if (now - lastReattach > retryInterval) {
                     lastReattach = now;
