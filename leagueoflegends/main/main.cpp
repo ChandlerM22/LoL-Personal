@@ -5404,7 +5404,7 @@ static void CacheGameState()
     if (g_junglerTracker || g_junglerDangerAlert) {
         if (g_enemyJunglerIdx < 0) {
             for (int i = 0; i < (int)g_heroes.size() && i < 12; i++) {
-                if (!g_heroes[i].addr || g_heroes[i].team == g_localTeam) continue;
+                if (!g_heroes[i].addr || g_heroes[i].team == g_localTeam || g_heroes[i].addr == g_localAddr || !g_heroes[i].name[0]) continue;
                 auto& d = g_heroSumms[i].d;
                 auto& f = g_heroSumms[i].f;
                 if ((d.name[0] && (strstr(d.name, "Smite") || strstr(d.name, "smite") || strstr(d.name, "SummonerSmite"))) ||
@@ -6708,8 +6708,10 @@ static void OrbwalkerTick()
             }
             ChampionCombo::Action act = ChampionCombo::Choose(q, g_comboSettings);
             if (act.valid && act.slot >= 0 && act.slot < 4 && act.castHoldMs == 0 && !act.useAuxTarget) {
-                if (act.castType == ChampionCombo::CastType::Position)
+                if (act.castType == ChampionCombo::CastType::Position) {
                     aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
+                    Sleep(8); // let game register cursor position before spell cast
+                }
                 PressKey((uint8_t)act.key);
                 g_orbLastSpell[act.slot] = now;
                 if (act.retryMs > 0) g_comboRetryCooldown[act.slot] = now + act.retryMs;
@@ -6723,6 +6725,7 @@ static void OrbwalkerTick()
                 if (g_orbReadCooldowns && g_spells[s].level > 0 && !g_spells[s].ready) continue;
                 if ((now - g_orbLastSpell[s]) < (ULONGLONG)(g_orbSpellGateMs + (g_orbHumanize ? randInt(0, 10) : 0))) continue;
                 aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
+                Sleep(8); // let game register cursor position before spell cast
                 PressKey(g_keyOptions[g_orbSpellKeyIdx[s]].hid);
                 g_orbLastSpell[s] = now;
                 break;
