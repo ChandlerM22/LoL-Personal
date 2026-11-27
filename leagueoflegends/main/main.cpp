@@ -6710,9 +6710,11 @@ static void OrbwalkerTick()
             if (act.valid && act.slot >= 0 && act.slot < 4 && act.castHoldMs == 0 && !act.useAuxTarget) {
                 if (act.castType == ChampionCombo::CastType::Position) {
                     aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
-                    Sleep(8); // let game register cursor position before spell cast
+                    Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
                 }
                 PressKey((uint8_t)act.key);
+                if (act.castType == ChampionCombo::CastType::Position)
+                    Sleep(20); // hold cursor on target until game processes the cast
                 g_orbLastSpell[act.slot] = now;
                 if (act.retryMs > 0) g_comboRetryCooldown[act.slot] = now + act.retryMs;
                 didSpell = true;
@@ -6725,8 +6727,9 @@ static void OrbwalkerTick()
                 if (g_orbReadCooldowns && g_spells[s].level > 0 && !g_spells[s].ready) continue;
                 if ((now - g_orbLastSpell[s]) < (ULONGLONG)(g_orbSpellGateMs + (g_orbHumanize ? randInt(0, 10) : 0))) continue;
                 aimAction(targetTrueOnScreen ? targetTrueScreenPos : targetScreenPos, true, true);
-                Sleep(8); // let game register cursor position before spell cast
+                Sleep(25); // KMBox USB round-trip needs ~20ms for game to register cursor
                 PressKey(g_keyOptions[g_orbSpellKeyIdx[s]].hid);
+                Sleep(20); // hold cursor on target until game processes the cast
                 g_orbLastSpell[s] = now;
                 break;
             }
