@@ -431,6 +431,7 @@ struct TrackedSkillshot {
     float castRange;
     float startTime;
     float duration;
+    float delayS;       // cast delay before missile launches (seconds)
     int   casterIdx;
     char  spellName[32];
 };
@@ -1034,6 +1035,23 @@ static void SyncMissilesToSkillshots() {
 
         // push new skillshot from missile data
         if (m.speed >= g_skillshotMinSpeed && m.width > 0.f && m.range > 100.f) {
+            // remove any cast-based entry that matches this missile (prevents double drawing)
+            // e.g. cast "ThreshQ" should be replaced when missile "ThreshQMissile" appears
+            {
+                std::string missileStem = MissileStripSuffix(m.spellName);
+                for (auto it2 = g_skillshots.begin(); it2 != g_skillshots.end(); ) {
+                    if (it2->casterIdx != -99) {  // cast-based entry (not missile)
+                        std::string castStem = MissileStripSuffix(it2->spellName);
+                        if (castStem == missileStem ||
+                            strcmp(it2->spellName, missileStem.c_str()) == 0 ||
+                            strcmp(m.spellName, it2->spellName) == 0) {
+                            it2 = g_skillshots.erase(it2);
+                            continue;
+                        }
+                    }
+                    ++it2;
+                }
+            }
             TrackedSkillshot ss{};
             ss.startPos     = m.startPos;
             ss.endPos       = m.endPos;
@@ -1043,6 +1061,7 @@ static void SyncMissilesToSkillshots() {
             // set startTime based on how far the missile has already traveled
             ss.startTime    = (m.speed > 1.f) ? (g_gameTime - traveledSoFar / m.speed) : g_gameTime;
             ss.duration     = m.range / m.speed;
+            ss.delayS       = 0.f;  // missile is already in flight, no delay
             ss.casterIdx    = -99;  // tag: this came from missile tracking, not cast detection
             strncpy(ss.spellName, m.spellName, 31);
             if (g_skillshots.size() < 30)
@@ -5251,6 +5270,13 @@ static void CacheGameState()
                     startPos.x, startPos.y, startPos.z, endPos.x, endPos.y, endPos.z);
 
                 if (g_skillshotAlerts && missileSpeed >= g_skillshotMinSpeed && lineWidth > 0.f && castRange > 100.f) {
+                    // look up cast delay from CSV evade entry
+                    float castDelayS = 0.f;
+                    {
+                        const EvadeSpellEntry* evDelay = LookupEvadeSpell(castSpellName);
+                        if (evDelay && evDelay->delayMs > 0)
+                            castDelayS = evDelay->delayMs / 1000.0f;
+                    }
                     TrackedSkillshot ss{};
                     ss.startPos     = startPos;
                     ss.endPos       = endPos;
@@ -5258,7 +5284,8 @@ static void CacheGameState()
                     ss.lineWidth    = lineWidth;
                     ss.castRange    = castRange;
                     ss.startTime    = g_gameTime;
-                    ss.duration     = castRange / missileSpeed;
+                    ss.duration     = castDelayS + castRange / missileSpeed;
+                    ss.delayS       = castDelayS;
                     ss.casterIdx    = i;
                     strncpy(ss.spellName, castSpellName, 31);
                     if (g_skillshots.size() < 20)
@@ -6085,7 +6112,8 @@ static void DrawESP()
             if (len < 1.f) continue;
             dx /= len; dz /= len;
 
-            float traveled = ss.missileSpeed * elapsed;
+            float moveElapsed = (ss.delayS > 0.f) ? std::max(0.f, elapsed - ss.delayS) : elapsed;
+            float traveled = ss.missileSpeed * moveElapsed;
             if (traveled > ss.castRange) traveled = ss.castRange;
 
             Vec3 missileHead = { ss.startPos.x + dx * traveled, ss.startPos.y, ss.startPos.z + dz * traveled };
