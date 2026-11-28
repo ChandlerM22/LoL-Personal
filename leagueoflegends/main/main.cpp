@@ -6014,7 +6014,7 @@ static void CacheGameState()
         }
         if (bestIdx >= 0) {
             static float lastSmiteAttempt = 0.f;
-            if (g_gameTime - lastSmiteAttempt > 0.5f) { // don't spam faster than 0.5s
+            if (g_gameTime - lastSmiteAttempt > 1.0f) { // don't spam faster than 1s
                 lastSmiteAttempt = g_gameTime;
                 unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
                 // Move cursor to target so smite hits the right monster
@@ -6023,8 +6023,8 @@ static void CacheGameState()
                 float oldCX = g_cursorX, oldCY = g_cursorY;
                 if (onScreen)
                     MoveCursorTo(smiteScreen.x, smiteScreen.y);
-                // Small delay so game registers cursor position before keypress
-                Sleep(15);
+                // Longer delay so game registers cursor hover on the monster
+                Sleep(50);
                 PressKey(hidCode);
                 VX_LOG("[Smite] FIRED on %s HP=%.0f dist=%.0f slot=%c onScreen=%d\n",
                     g_minions[bestIdx].name, g_minions[bestIdx].health,
