@@ -1147,6 +1147,9 @@ static float SmiteDamage(int level) {
     return 600.f + (level - 1) * 30.f;
 }
 
+// Forward declaration (defined later, needed by auto smite)
+static void MoveCursorTo(float targetX, float targetY);
+
 // ── Awareness / Tracker ──
 static bool g_trackerEnabled      = true;
 static bool g_trackerSumms        = true;
