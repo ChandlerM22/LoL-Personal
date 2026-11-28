@@ -5975,6 +5975,34 @@ static void CacheGameState()
                 bestIdx = i;
             }
         }
+        // Debug: log why smite didn't find a target every 2 seconds
+        {
+            static float lastSmiteDbg = 0.f;
+            if (g_gameTime - lastSmiteDbg > 2.0f) {
+                lastSmiteDbg = g_gameTime;
+                int jTotal=0, jVisible=0, jRange=0, jHP=0;
+                float closestDist=99999.f, closestHP=0.f;
+                char closestName[64]="";
+                for (int i = 0; i < (int)g_minions.size(); i++) {
+                    const auto& m = g_minions[i];
+                    if (!m.addr || m.isDead || m.health<=0.f) continue;
+                    if (m.team == g_localTeam || m.name[0]==0) continue;
+                    bool isJ = (strstr(m.name,"SRU_")||strstr(m.name,"Sru_"));
+                    if (!isJ || m.maxHealth<500.f) continue;
+                    jTotal++;
+                    if (!m.visible) continue;
+                    jVisible++;
+                    float dx=m.pos.x-g_localPos.x, dy=m.pos.y-g_localPos.y, dz=m.pos.z-g_localPos.z;
+                    float d=sqrtf(dx*dx+dy*dy+dz*dz);
+                    if (d<closestDist) { closestDist=d; closestHP=m.health; strncpy(closestName,m.name,63); }
+                    if (d>500.f) continue;
+                    jRange++;
+                    if (m.health<=smiteDmg) jHP++;
+                }
+                VX_LOG("[Smite] scan: jgl=%d vis=%d rng=%d hp_ok=%d best=%d | closest='%s' dist=%.0f hp=%.0f dmg=%.0f\n",
+                    jTotal,jVisible,jRange,jHP,bestIdx,closestName,closestDist,closestHP,smiteDmg);
+            }
+        }
         if (bestIdx >= 0) {
             static float lastSmiteAttempt = 0.f;
             if (g_gameTime - lastSmiteAttempt > 0.5f) { // don't spam faster than 0.5s
