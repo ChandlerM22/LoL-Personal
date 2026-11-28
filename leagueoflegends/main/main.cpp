@@ -1136,6 +1136,8 @@ static int   g_smiteSlot          = -1;   // 4 or 5 (D or F), -1 if no smite
 static float g_smiteReadyAt       = 0.f;
 static bool  g_smiteReady         = false;
 static char  g_smiteName[64]      = "";
+static int   g_smiteKeyIdx        = 50;  // index into g_keyOptions, default = backtick (`)
+static bool  g_smiteToggleLastDown = false;
 
 static float SmiteDamage(int level) {
     // Season 14+ smite: 600 base at level 1, scales up. Upgraded (pets) = 900.
@@ -1703,6 +1705,8 @@ static void SaveConfig(const char* name) {
     fprintf(f, xorstr_("kmbox_ip=%s\n"), g_kmboxIP);
     fprintf(f, xorstr_("kmbox_port=%d\n"), g_kmboxPort);
     fprintf(f, xorstr_("kmbox_uuid=%s\n"), g_kmboxUUID);
+    fprintf(f, xorstr_("smite_enabled=%d\n"), g_smiteEnabled ? 1 : 0);
+    fprintf(f, xorstr_("smite_key_hid=%d\n"), (int)g_keyOptions[g_smiteKeyIdx].hid);
 
     fclose(f);
     snprintf(g_configStatus, sizeof(g_configStatus), "Saved: %s", name);
@@ -1818,6 +1822,8 @@ static void LoadConfig(const char* name) {
         else if (!strcmp(line, xorstr_("kmbox_ip")))         strncpy(g_kmboxIP, val, sizeof(g_kmboxIP) - 1);
         else if (!strcmp(line, xorstr_("kmbox_port")))       g_kmboxPort = atoi(val);
         else if (!strcmp(line, xorstr_("kmbox_uuid")))       strncpy(g_kmboxUUID, val, sizeof(g_kmboxUUID) - 1);
+        else if (!strcmp(line, xorstr_("smite_enabled")))   g_smiteEnabled = atoi(val) != 0;
+        else if (!strcmp(line, xorstr_("smite_key_hid")))   g_smiteKeyIdx = FindKeyIdx((uint8_t)atoi(val));
     }
     fclose(f);
     snprintf(g_configStatus, sizeof(g_configStatus), "Loaded: %s", name);
@@ -5932,6 +5938,14 @@ static void CacheGameState()
         }
     }
 
+    // ── Auto smite toggle key ──
+    {
+        bool down = Keyboard::IsKeyDown(HidToVk(g_keyOptions[g_smiteKeyIdx].hid));
+        if (down && !g_smiteToggleLastDown)
+            g_smiteEnabled = !g_smiteEnabled;
+        g_smiteToggleLastDown = down;
+    }
+
     // ── Auto smite ──
     if (g_smiteEnabled && g_smiteSlot >= 0 && g_smiteReady && g_gameTime > 90.f) {
         float smiteDmg = SmiteDamage(g_localLevel);
@@ -5958,9 +5972,17 @@ static void CacheGameState()
             }
         }
         if (bestIdx >= 0) {
-            // Cast smite via keyboard (D = slot 4, F = slot 5)
-            unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09; // D=0x07, F=0x09 HID
-            InputDevice::KeyPress(hidCode);
+            // Move cursor to the target monster so smite hits the right one
+            Vec2 smiteScreen;
+            if (WorldToScreen(g_minions[bestIdx].pos, smiteScreen)) {
+                float oldCX = g_cursorX, oldCY = g_cursorY;
+                MoveCursorTo(smiteScreen.x, smiteScreen.y);
+                // Cast smite via keyboard (D = slot 4, F = slot 5)
+                unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
+                InputDevice::KeyPress(hidCode);
+                // Restore cursor position
+                MoveCursorTo(oldCX, oldCY);
+            }
         }
     }
 }
@@ -7612,6 +7634,8 @@ static void DrawMenu()
                     ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1), "%.0fs", g_smiteReadyAt - g_gameTime);
                 }
             }
+            ImGui::SetNextItemWidth(80);
+            ImGui::Combo("Toggle Key##smite_key", &g_smiteKeyIdx, keyComboStr);
 
             ImGui::Spacing();
             SectionHeader("Summoner Spells");
