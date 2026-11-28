@@ -5975,16 +5975,30 @@ static void CacheGameState()
             }
         }
         if (bestIdx >= 0) {
-            unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
-            // Try to move cursor to target first, but always cast even if off-screen
-            Vec2 smiteScreen;
-            bool onScreen = WorldToScreen(g_minions[bestIdx].pos, smiteScreen);
-            float oldCX = g_cursorX, oldCY = g_cursorY;
-            if (onScreen)
-                MoveCursorTo(smiteScreen.x, smiteScreen.y);
-            InputDevice::KeyPress(hidCode);
-            if (onScreen)
-                MoveCursorTo(oldCX, oldCY);
+            static float lastSmiteAttempt = 0.f;
+            if (g_gameTime - lastSmiteAttempt > 0.5f) { // don't spam faster than 0.5s
+                lastSmiteAttempt = g_gameTime;
+                unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
+                // Move cursor to target so smite hits the right monster
+                Vec2 smiteScreen;
+                bool onScreen = WorldToScreen(g_minions[bestIdx].pos, smiteScreen);
+                float oldCX = g_cursorX, oldCY = g_cursorY;
+                if (onScreen)
+                    MoveCursorTo(smiteScreen.x, smiteScreen.y);
+                // Small delay so game registers cursor position before keypress
+                Sleep(15);
+                PressKey(hidCode);
+                VX_LOG("[Smite] FIRED on %s HP=%.0f dist=%.0f slot=%c onScreen=%d\n",
+                    g_minions[bestIdx].name, g_minions[bestIdx].health,
+                    sqrtf(powf(g_minions[bestIdx].pos.x-g_localPos.x,2)+
+                          powf(g_minions[bestIdx].pos.y-g_localPos.y,2)+
+                          powf(g_minions[bestIdx].pos.z-g_localPos.z,2)),
+                    g_smiteSlot==4?'D':'F', onScreen?1:0);
+                if (onScreen) {
+                    Sleep(15);
+                    MoveCursorTo(oldCX, oldCY);
+                }
+            }
         }
     }
 }
