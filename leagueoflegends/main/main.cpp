@@ -1146,6 +1146,17 @@ static float SmiteDamage(int level) {
     return 600.f + (level - 1) * (800.f / 17.f); // 600 at lv1, 1400 at lv18
 }
 
+// Returns true if the minion name matches a smite-worthy objective (dragon/baron/herald/voidgrubs)
+static bool IsSmiteObjective(const char* name) {
+    if (!name || name[0] == 0) return false;
+    if (strstr(name, "SRU_Dragon") || strstr(name, "Sru_Dragon")) return true;
+    if (strstr(name, "SRU_Baron") || strstr(name, "Sru_Baron")) return true;
+    if (strstr(name, "SRU_RiftHerald") || strstr(name, "Sru_RiftHerald")) return true;
+    if (strstr(name, "SRU_Horde") || strstr(name, "Sru_Horde")) return true;
+    if (strstr(name, "SRU_Atakhan") || strstr(name, "Sru_Atakhan")) return true;
+    return false;
+}
+
 // Forward declaration (defined later, needed by auto smite)
 static void MoveCursorTo(float targetX, float targetY);
 
@@ -5960,16 +5971,8 @@ static void CacheGameState()
             if (!m.addr || m.isDead || m.health <= 0.f || !m.visible) continue;
             if (m.team == g_localTeam) continue;
             if (m.name[0] == 0) continue;
-            bool isJungle = (strstr(m.name, "SRU_") != nullptr) ||
-                            (strstr(m.name, "Sru_") != nullptr);
-            if (!isJungle) continue;
-            // skip respawn markers, wards, plants — not real monsters
-            if (strstr(m.name, "Respawn") || strstr(m.name, "Marker") ||
-                strstr(m.name, "Ward") || strstr(m.name, "Plant") ||
-                strstr(m.name, "Mini") || strstr(m.name, "Trinket"))
-                continue;
-            // skip small monsters (camps like mini raptors, mini krugs)
-            if (m.maxHealth < 500.f) continue;
+            // objectives only: dragon, baron, herald, voidgrubs, atakhan
+            if (!IsSmiteObjective(m.name)) continue;
             float dx = m.pos.x - g_localPos.x;
             float dy = m.pos.y - g_localPos.y;
             float dz = m.pos.z - g_localPos.z;
@@ -5992,12 +5995,7 @@ static void CacheGameState()
                     const auto& m = g_minions[i];
                     if (!m.addr || m.isDead || m.health<=0.f) continue;
                     if (m.team == g_localTeam || m.name[0]==0) continue;
-                    bool isJ = (strstr(m.name,"SRU_")||strstr(m.name,"Sru_"));
-                    if (!isJ) continue;
-                    if (strstr(m.name,"Respawn")||strstr(m.name,"Marker")||
-                        strstr(m.name,"Ward")||strstr(m.name,"Plant")||
-                        strstr(m.name,"Mini")||strstr(m.name,"Trinket")) continue;
-                    if (m.maxHealth<500.f) continue;
+                    if (!IsSmiteObjective(m.name)) continue;
                     jTotal++;
                     if (!m.visible) continue;
                     jVisible++;
@@ -7696,13 +7694,8 @@ static void DrawMenu()
                 for (int i = 0; i < (int)g_minions.size(); i++) {
                     const auto& m = g_minions[i];
                     if (!m.addr || m.isDead || m.health <= 0.f) continue;
-                    bool isJ = (strstr(m.name, "SRU_") || strstr(m.name, "Sru_"));
-                    if (!isJ) continue;
-                    if (strstr(m.name, "Respawn") || strstr(m.name, "Marker") ||
-                        strstr(m.name, "Ward") || strstr(m.name, "Plant") ||
-                        strstr(m.name, "Mini") || strstr(m.name, "Trinket"))
-                        continue;
-                    if (m.maxHealth >= 500.f) jCount++;
+                    if (!IsSmiteObjective(m.name)) continue;
+                    jCount++;
                 }
                 ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1),
                     "EN:%d SL:%d RDY:%d GT:%.0f MINS:%d JGL:%d",
