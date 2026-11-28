@@ -5975,17 +5975,16 @@ static void CacheGameState()
             }
         }
         if (bestIdx >= 0) {
-            // Move cursor to the target monster so smite hits the right one
+            unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
+            // Try to move cursor to target first, but always cast even if off-screen
             Vec2 smiteScreen;
-            if (WorldToScreen(g_minions[bestIdx].pos, smiteScreen)) {
-                float oldCX = g_cursorX, oldCY = g_cursorY;
+            bool onScreen = WorldToScreen(g_minions[bestIdx].pos, smiteScreen);
+            float oldCX = g_cursorX, oldCY = g_cursorY;
+            if (onScreen)
                 MoveCursorTo(smiteScreen.x, smiteScreen.y);
-                // Cast smite via keyboard (D = slot 4, F = slot 5)
-                unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
-                InputDevice::KeyPress(hidCode);
-                // Restore cursor position
+            InputDevice::KeyPress(hidCode);
+            if (onScreen)
                 MoveCursorTo(oldCX, oldCY);
-            }
         }
     }
 }
