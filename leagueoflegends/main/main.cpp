@@ -409,6 +409,7 @@ struct CachedMinion {
     char      name[64];
 };
 static std::vector<CachedMinion> g_minions;
+static std::vector<CachedMinion> g_smiteObjectives;  // objectives from ObjectManager for smite
 
 // ── Summoner spell tracking (per hero) ──
 struct SummonerSpell {
@@ -5961,29 +5962,92 @@ static void CacheGameState()
         g_smiteToggleLastDown = down;
     }
 
+    // ── Populate smite objectives from ObjectManager (has ALL game objects) ──
+    if (g_smiteEnabled && g_smiteSlot >= 0 && g_gameTime > 90.f) {
+        g_smiteObjectives.clear();
+        std::vector<uintptr_t> objPtrs;
+        ReadEntityList(Offsets::Globals::ObjectManager, objPtrs, 300);
+        if (!objPtrs.empty()) {
+            struct ObjRead { uint8_t nameRaw[32]; Vec3 pos; float health; float maxHealth; uint8_t team; bool visible; };
+            std::vector<ObjRead> objData(objPtrs.size());
+            auto os = TargetProcess.CreateScatterHandle();
+            for (uint32_t i = 0; i < objPtrs.size(); i++) {
+                objData[i] = {};
+                if (!objPtrs[i]) continue;
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::Name,      objData[i].nameRaw, 32);
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::Position,   &objData[i].pos, sizeof(Vec3));
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::Health,     &objData[i].health, sizeof(float));
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::MaxHealth,  &objData[i].maxHealth, sizeof(float));
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::Team,       &objData[i].team, sizeof(uint8_t));
+                TargetProcess.AddScatterReadRequest(os, objPtrs[i] + Offsets::GameObject::Visible,    &objData[i].visible, sizeof(bool));
+            }
+            TargetProcess.ExecuteReadScatter(os);
+            TargetProcess.CloseScatterHandle(os);
+            // resolve SSO names and filter objectives
+            struct NameBuf { char n[64]; };
+            std::vector<uint32_t> derefIdx;
+            std::vector<NameBuf> resolvedNames(objPtrs.size());
+            for (uint32_t i = 0; i < objPtrs.size(); i++) {
+                memset(resolvedNames[i].n, 0, 64);
+                if (!objPtrs[i]) continue;
+                uint64_t cap = *(uint64_t*)(objData[i].nameRaw + 24);
+                if (cap <= 15) {
+                    memcpy(resolvedNames[i].n, objData[i].nameRaw, 16);
+                    resolvedNames[i].n[15] = 0;
+                } else {
+                    derefIdx.push_back(i);
+                }
+            }
+            if (!derefIdx.empty()) {
+                auto os2 = TargetProcess.CreateScatterHandle();
+                for (uint32_t idx : derefIdx) {
+                    uint64_t np = *(uint64_t*)(objData[idx].nameRaw);
+                    if (np > 0x10000 && np < 0x7FFFFFFFFFFF)
+                        TargetProcess.AddScatterReadRequest(os2, (uintptr_t)np, resolvedNames[idx].n, 63);
+                }
+                TargetProcess.ExecuteReadScatter(os2);
+                TargetProcess.CloseScatterHandle(os2);
+            }
+            for (uint32_t i = 0; i < objPtrs.size(); i++) {
+                if (!objPtrs[i]) continue;
+                resolvedNames[i].n[63] = 0;
+                if (!IsSmiteObjective(resolvedNames[i].n)) continue;
+                if (objData[i].health <= 0.f) continue;
+                CachedMinion cm = {};
+                cm.addr = objPtrs[i];
+                cm.pos = objData[i].pos;
+                cm.health = objData[i].health;
+                cm.maxHealth = objData[i].maxHealth;
+                cm.team = objData[i].team;
+                cm.visible = objData[i].visible;
+                cm.isDead = false;
+                strncpy(cm.name, resolvedNames[i].n, 63);
+                cm.name[63] = 0;
+                g_smiteObjectives.push_back(cm);
+            }
+        }
+    }
+
     // ── Auto smite ──
     if (g_smiteEnabled && g_smiteSlot >= 0 && g_smiteReady && g_gameTime > 90.f) {
         float smiteDmg = SmiteDamage(g_localLevel);
         int bestIdx = -1;
         float bestHP = 99999.f;
-        for (int i = 0; i < (int)g_minions.size(); i++) {
-            const auto& m = g_minions[i];
-            if (!m.addr || m.isDead || m.health <= 0.f || !m.visible) continue;
+        for (int i = 0; i < (int)g_smiteObjectives.size(); i++) {
+            const auto& m = g_smiteObjectives[i];
+            if (!m.addr || m.health <= 0.f || !m.visible) continue;
             if (m.team == g_localTeam) continue;
-            if (m.name[0] == 0) continue;
-            // objectives only: dragon, baron, herald, voidgrubs, atakhan
-            if (!IsSmiteObjective(m.name)) continue;
             float dx = m.pos.x - g_localPos.x;
             float dy = m.pos.y - g_localPos.y;
             float dz = m.pos.z - g_localPos.z;
             float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-            if (dist > 500.f) continue; // smite range ~500
+            if (dist > 500.f) continue;
             if (m.health <= smiteDmg && m.health < bestHP) {
                 bestHP = m.health;
                 bestIdx = i;
             }
         }
-        // Debug: log why smite didn't find a target every 2 seconds
+        // Debug: log smite scan every 2 seconds
         {
             static float lastSmiteDbg = 0.f;
             if (g_gameTime - lastSmiteDbg > 2.0f) {
@@ -5991,11 +6055,10 @@ static void CacheGameState()
                 int jTotal=0, jVisible=0, jRange=0, jHP=0;
                 float closestDist=99999.f, closestHP=0.f;
                 char closestName[64]="";
-                for (int i = 0; i < (int)g_minions.size(); i++) {
-                    const auto& m = g_minions[i];
-                    if (!m.addr || m.isDead || m.health<=0.f) continue;
-                    if (m.team == g_localTeam || m.name[0]==0) continue;
-                    if (!IsSmiteObjective(m.name)) continue;
+                for (int i = 0; i < (int)g_smiteObjectives.size(); i++) {
+                    const auto& m = g_smiteObjectives[i];
+                    if (!m.addr || m.health<=0.f) continue;
+                    if (m.team == g_localTeam) continue;
                     jTotal++;
                     if (!m.visible) continue;
                     jVisible++;
@@ -6006,29 +6069,27 @@ static void CacheGameState()
                     jRange++;
                     if (m.health<=smiteDmg) jHP++;
                 }
-                VX_LOG("[Smite] scan: jgl=%d vis=%d rng=%d hp_ok=%d best=%d | closest='%s' dist=%.0f hp=%.0f dmg=%.0f\n",
+                VX_LOG("[Smite] scan(ObjMgr): jgl=%d vis=%d rng=%d hp_ok=%d best=%d | closest='%s' dist=%.0f hp=%.0f dmg=%.0f\n",
                     jTotal,jVisible,jRange,jHP,bestIdx,closestName,closestDist,closestHP,smiteDmg);
             }
         }
         if (bestIdx >= 0) {
             static float lastSmiteAttempt = 0.f;
-            if (g_gameTime - lastSmiteAttempt > 1.0f) { // don't spam faster than 1s
+            if (g_gameTime - lastSmiteAttempt > 1.0f) {
                 lastSmiteAttempt = g_gameTime;
                 unsigned int hidCode = (g_smiteSlot == 4) ? 0x07 : 0x09;
-                // Move cursor to target so smite hits the right monster
                 Vec2 smiteScreen;
-                bool onScreen = WorldToScreen(g_minions[bestIdx].pos, smiteScreen);
+                bool onScreen = WorldToScreen(g_smiteObjectives[bestIdx].pos, smiteScreen);
                 float oldCX = g_cursorX, oldCY = g_cursorY;
                 if (onScreen)
                     MoveCursorTo(smiteScreen.x, smiteScreen.y);
-                // Longer delay so game registers cursor hover on the monster
                 Sleep(50);
                 PressKey(hidCode);
                 VX_LOG("[Smite] FIRED on %s HP=%.0f dist=%.0f slot=%c onScreen=%d\n",
-                    g_minions[bestIdx].name, g_minions[bestIdx].health,
-                    sqrtf(powf(g_minions[bestIdx].pos.x-g_localPos.x,2)+
-                          powf(g_minions[bestIdx].pos.y-g_localPos.y,2)+
-                          powf(g_minions[bestIdx].pos.z-g_localPos.z,2)),
+                    g_smiteObjectives[bestIdx].name, g_smiteObjectives[bestIdx].health,
+                    sqrtf(powf(g_smiteObjectives[bestIdx].pos.x-g_localPos.x,2)+
+                          powf(g_smiteObjectives[bestIdx].pos.y-g_localPos.y,2)+
+                          powf(g_smiteObjectives[bestIdx].pos.z-g_localPos.z,2)),
                     g_smiteSlot==4?'D':'F', onScreen?1:0);
                 if (onScreen) {
                     Sleep(15);
@@ -7690,17 +7751,10 @@ static void DrawMenu()
             ImGui::Combo("Toggle Key##smite_key", &g_smiteKeyIdx, keyComboStr);
             // Debug info for smite
             {
-                int jCount = 0;
-                for (int i = 0; i < (int)g_minions.size(); i++) {
-                    const auto& m = g_minions[i];
-                    if (!m.addr || m.isDead || m.health <= 0.f) continue;
-                    if (!IsSmiteObjective(m.name)) continue;
-                    jCount++;
-                }
                 ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1),
-                    "EN:%d SL:%d RDY:%d GT:%.0f MINS:%d JGL:%d",
+                    "EN:%d SL:%d RDY:%d GT:%.0f OBJ:%d",
                     g_smiteEnabled?1:0, g_smiteSlot, g_smiteReady?1:0,
-                    g_gameTime, (int)g_minions.size(), jCount);
+                    g_gameTime, (int)g_smiteObjectives.size());
             }
 
             ImGui::Spacing();
