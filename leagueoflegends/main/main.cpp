@@ -7638,6 +7638,20 @@ static void DrawMenu()
             }
             ImGui::SetNextItemWidth(80);
             ImGui::Combo("Toggle Key##smite_key", &g_smiteKeyIdx, keyComboStr);
+            // Debug info for smite
+            {
+                int jCount = 0;
+                for (int i = 0; i < (int)g_minions.size(); i++) {
+                    const auto& m = g_minions[i];
+                    if (!m.addr || m.isDead || m.health <= 0.f) continue;
+                    bool isJ = (strstr(m.name, "SRU_") || strstr(m.name, "Sru_"));
+                    if (isJ && m.maxHealth >= 500.f) jCount++;
+                }
+                ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1),
+                    "EN:%d SL:%d RDY:%d GT:%.0f MINS:%d JGL:%d",
+                    g_smiteEnabled?1:0, g_smiteSlot, g_smiteReady?1:0,
+                    g_gameTime, (int)g_minions.size(), jCount);
+            }
 
             ImGui::Spacing();
             SectionHeader("Summoner Spells");
