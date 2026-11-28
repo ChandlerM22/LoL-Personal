@@ -5963,6 +5963,11 @@ static void CacheGameState()
             bool isJungle = (strstr(m.name, "SRU_") != nullptr) ||
                             (strstr(m.name, "Sru_") != nullptr);
             if (!isJungle) continue;
+            // skip respawn markers, wards, plants — not real monsters
+            if (strstr(m.name, "Respawn") || strstr(m.name, "Marker") ||
+                strstr(m.name, "Ward") || strstr(m.name, "Plant") ||
+                strstr(m.name, "Mini") || strstr(m.name, "Trinket"))
+                continue;
             // skip small monsters (camps like mini raptors, mini krugs)
             if (m.maxHealth < 500.f) continue;
             float dx = m.pos.x - g_localPos.x;
@@ -5988,7 +5993,11 @@ static void CacheGameState()
                     if (!m.addr || m.isDead || m.health<=0.f) continue;
                     if (m.team == g_localTeam || m.name[0]==0) continue;
                     bool isJ = (strstr(m.name,"SRU_")||strstr(m.name,"Sru_"));
-                    if (!isJ || m.maxHealth<500.f) continue;
+                    if (!isJ) continue;
+                    if (strstr(m.name,"Respawn")||strstr(m.name,"Marker")||
+                        strstr(m.name,"Ward")||strstr(m.name,"Plant")||
+                        strstr(m.name,"Mini")||strstr(m.name,"Trinket")) continue;
+                    if (m.maxHealth<500.f) continue;
                     jTotal++;
                     if (!m.visible) continue;
                     jVisible++;
@@ -7688,7 +7697,12 @@ static void DrawMenu()
                     const auto& m = g_minions[i];
                     if (!m.addr || m.isDead || m.health <= 0.f) continue;
                     bool isJ = (strstr(m.name, "SRU_") || strstr(m.name, "Sru_"));
-                    if (isJ && m.maxHealth >= 500.f) jCount++;
+                    if (!isJ) continue;
+                    if (strstr(m.name, "Respawn") || strstr(m.name, "Marker") ||
+                        strstr(m.name, "Ward") || strstr(m.name, "Plant") ||
+                        strstr(m.name, "Mini") || strstr(m.name, "Trinket"))
+                        continue;
+                    if (m.maxHealth >= 500.f) jCount++;
                 }
                 ImGui::TextColored(ImVec4(0.55f,0.55f,0.62f,1),
                     "EN:%d SL:%d RDY:%d GT:%.0f MINS:%d JGL:%d",
