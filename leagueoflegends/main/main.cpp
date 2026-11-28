@@ -5546,7 +5546,9 @@ static void CacheGameState()
                     strstr(slots[s]->name, "SummonerSmite")) {
                     g_smiteSlot    = (s == 0) ? 4 : 5;
                     g_smiteReadyAt = slots[s]->readyAt;
-                    g_smiteReady   = slots[s]->ready;
+                    // readyAt offset is unreliable for local player — always trust smite is ready
+                    // the user can see their own cooldown in-game
+                    g_smiteReady   = true;
                     strncpy(g_smiteName, slots[s]->name, 63);
                     break;
                 }
