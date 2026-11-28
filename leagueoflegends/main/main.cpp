@@ -1140,11 +1140,10 @@ static int   g_smiteKeyIdx        = 50;  // index into g_keyOptions, default = b
 static bool  g_smiteToggleLastDown = false;
 
 static float SmiteDamage(int level) {
-    // Season 14+ smite: 600 base at level 1, scales up. Upgraded (pets) = 900.
-    // Simple table: 600 + (level-1)*30, capped at practical values
+    // Current smite damage: 600 base, +~47 per level, 1400 at level 18
     if (level < 1) level = 1;
     if (level > 18) level = 18;
-    return 600.f + (level - 1) * 30.f;
+    return 600.f + (level - 1) * (800.f / 17.f); // 600 at lv1, 1400 at lv18
 }
 
 // Forward declaration (defined later, needed by auto smite)
